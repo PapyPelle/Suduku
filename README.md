@@ -1,2 +1,1 @@
-# Suduku
-Parallelism in solving sudoku
+# SUDUKU PARALLEL
