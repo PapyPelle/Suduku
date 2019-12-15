@@ -52,6 +52,7 @@ int		sudoku_get_cell_block(Sudoku* s, int row, int col);
 int 	sudoku_update_row(Sudoku* s, int index);
 int	    sudoku_update_column(Sudoku* s, int index);
 int 	sudoku_update_block(Sudoku* s, int index);
+int     sudoku_make_choice(Sudoku* s);
 int 	sudoku_print(Sudoku* s);
 
 
@@ -269,6 +270,7 @@ int sudoku_print(Sudoku* s)
 				else
 					printf(".");
 			printf(")  ");
+            
 			
 		}
 		printf("\n");
@@ -349,6 +351,7 @@ inline int sudoku_update_block(Sudoku* s, int index)
 // retourne 1 si un choix est fait, 0 sinon (= fin du sudoku puisque 100% value unique)
 int sudoku_make_choice(Sudoku* s) 
 {
+    printf("BLOCKED : MAKING CHOICE -> ");
     int i,j;
     for(i=0; i < s->value_range; i++)
     {
@@ -358,6 +361,7 @@ int sudoku_make_choice(Sudoku* s)
             if (cell_has_unique_value(c) == 0)
             {
                 cell_force_set_value(c, cell_get_first_value(c));
+                printf("choosing for cell %d %d\n", i,j);
                 return 1;
             }
         }
@@ -368,7 +372,7 @@ int sudoku_make_choice(Sudoku* s)
 // MMMMAAAAAAAAIIIINNNN
 int main(int argc, char* argv[])
 {
-	int i, modif, end;
+	int i, modif, end, it, modif_count;
 	Sudoku* s;
 
 	s = sudoku_create(stdin);
@@ -376,23 +380,26 @@ int main(int argc, char* argv[])
 
 	sudoku_print(s);
     end = 1;
-
+    it = 0;
     while (end) {
+        modif_count = 0;
         modif = 1;
-        while (modif)
+        while (modif_count < 3)
+        {
+            for (i = 0; i < s->value_range; i++)
             {
-                modif = 0;
-                for (i = 0; i < s->value_range; i++)
-                {
-                    modif |= sudoku_update_row(s, i);
-                    modif |= sudoku_update_column(s, i);
-                    modif |= sudoku_update_block(s, i);
-                }
-                sudoku_print(s);
+                modif |= sudoku_update_row(s, i);
+                modif |= sudoku_update_column(s, i);
+                modif |= sudoku_update_block(s, i);
             }
+            // sudoku_print(s);
+            printf("----- %d\n", it++);
+            if (modif)
+                modif_count++;
+        }
         end = sudoku_make_choice(s);
     }
-
+    sudoku_print(s);
 	sudoku_free(s);
 
 	return EXIT_SUCCESS;
