@@ -33,16 +33,22 @@ void	cell_free(Cell* c);
 void	cell_set_empty(Cell* c);
 void	cell_set_filled(Cell* c, int val);
 int		cell_has_unique_value(const Cell* c);
+int		cell_can_have_value(const Cell* c, int v);
 int		cell_get_first_value(const Cell* c);
 int		cell_get_unique_value(const Cell* c);
 void	cell_set_value(Cell* c, int v);
 void	cell_unset_value(Cell* c, int v);
 
-Sudoku* sudoku_create(FILE* input);
+Sudoku*	sudoku_create(FILE* input);
 void	sudoku_free(Sudoku* s);
 Cell*	sudoku_get_cell(Sudoku* s, int row, int col);
+Cell*	sudoku_get_row_cell(Sudoku* s, int row, int index);
+Cell*	sudoku_get_column_cell(Sudoku* s, int col, int index);
+Cell*	sudoku_get_block_cell(Sudoku* s, int block, int index);
 int		sudoku_get_cell_block(Sudoku* s, int row, int col);
-Cell*	sudoku_get_block_cell(Sudoku* s, int group, int index);
+void	sudoku_update_row(Sudoku* s, int index);
+void	sudoku_update_column(Sudoku* s, int index);
+void	sudoku_update_block(Sudoku* s, int index);
 void	sudoku_print(Sudoku* s);
 
 
@@ -87,7 +93,7 @@ inline void cell_set_filled(Cell* c, int val)
 {
 	memset(c->values, 0, c->values_size * sizeof(char));
 	c->values[val - 1] = 1;
-	c->count= 1;
+	c->count = 1;
 	c->unique_value = val;
 }
 
@@ -95,6 +101,11 @@ inline void cell_set_filled(Cell* c, int val)
 inline int cell_has_unique_value(const Cell* c)
 {
 	return (c->count == 1);
+}
+
+inline int cell_can_have_value(const Cell* c, int v)
+{
+	return (int)(c->values[v - 1]);
 }
 
 // Renvoie la première valeur trouvée
@@ -159,7 +170,7 @@ Sudoku* sudoku_create(FILE* input)
 
 	s->data = (Cell*)malloc(data_size * sizeof(Cell));
 	if (s->data == NULL) { free(s); return NULL; }
-	
+
 	s->dim = dim;
 	s->value_range = value_range;
 	s->data_size = data_size;
@@ -175,6 +186,9 @@ Sudoku* sudoku_create(FILE* input)
 // Libère les ressources allouées par un sudoku
 void sudoku_free(Sudoku* s)
 {
+	int i;
+	for (i = 0; i < s->data_size; i++)
+		cell_free(&(s->data[i]));
 	free(s->data);
 	s->data = NULL;
 	s->data_size = 0;
@@ -208,13 +222,14 @@ inline int sudoku_get_cell_block(Sudoku* s, int row, int col)
 // Retourne une cellule d'un bloc
 inline Cell* sudoku_get_block_cell(Sudoku* s, int group, int index)
 {
-	return &(s->data[((group / s->dim) * s->dim + (index / s->dim)) * s->value_range + ((group % s->dim) * s->dim + (index % s->dim))]);
+	return sudoku_get_cell(s, (group / s->dim) * s->dim + (index / s->dim), (group % s->dim) * s->dim + (index % s->dim));
 }
 
 // Affiche la grille de sudoku
 void sudoku_print(Sudoku* s)
 {
-	printf("----------------\n");
+	static int it = 0;
+	printf("---------------- %d\n", it++);
 	int i, j;
 	int v;
 	for (i = 0; i < s->value_range; i++)
@@ -226,6 +241,18 @@ void sudoku_print(Sudoku* s)
 				printf("%d ", v);
 			else
 				printf(". ");
+
+			/*
+			// Affichage des valeurs possibles pour chaque case
+			int k;
+			printf("(");
+			for (k = 0; k < s->value_range; k++)
+				if (cell_can_have_value(sudoku_get_cell(s, i, j), k + 1))
+					printf("%d ", k + 1);
+				else
+					printf(". ", k + 1);
+			printf(")   ");
+			*/
 		}
 		printf("\n");
 	}
@@ -236,11 +263,11 @@ void sudoku_print(Sudoku* s)
 void sudoku_update_INTERNAL(Sudoku* s, Cell* (*getter)(Sudoku* _s, int _group_index, int _cell_index), int index)
 {
 	int i, j;
-	int v;
 
+	// Si une valeur est "écrite" dans une case, alors on peut retirer cette valeur des valeurs possibles dans les autres cases du groupe
 	for (i = 0; i < s->value_range; i++)
 	{
-		v = cell_get_unique_value(getter(s, index, i));
+		int v = cell_get_unique_value(getter(s, index, i));
 
 		if (v != 0)
 		{
@@ -250,6 +277,31 @@ void sudoku_update_INTERNAL(Sudoku* s, Cell* (*getter)(Sudoku* _s, int _group_in
 					cell_unset_value(getter(s, index, j), v);
 			}
 		}
+	}
+
+	// Si une case d'un groupe est la seule à pouvoir accueillir une valeur, alors on peut "écrire" cette valeur dans la case.
+	for (i = 0; i < s->value_range; i++)
+	{
+		int v = i + 1;
+		Cell* unique = NULL;
+
+		for (j = 0; j < s->value_range; j++)
+		{
+			Cell* c = getter(s, index, j);
+			if (cell_can_have_value(c, v))
+			{
+				if (unique == NULL)
+					unique = c;
+				else
+				{
+					unique = NULL;
+					break;
+				}
+			}
+		}
+
+		if (unique != NULL)
+			cell_set_value(unique, v);
 	}
 }
 
