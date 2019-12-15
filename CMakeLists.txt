@@ -15,8 +15,8 @@ include_directories(${OpenMP_INCLUDE_DIR})
 
 add_executable(generate generate.c)
 
-#add_executable(suduku suduku.c)
-#target_link_libraries(suduku ${OpenMP_LIBRARY})
+add_executable(suduku suduku.c)
+target_link_libraries(suduku ${OpenMP_LIBRARY})
 
 add_executable(suduku2 suduku2.c)
 target_link_libraries(suduku2 ${OpenMP_LIBRARY})
