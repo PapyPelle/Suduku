@@ -34,6 +34,7 @@ int		cell_init(Sudoku* s, Cell* c, int value);
 void	cell_free(Cell* c);
 void	cell_set_empty(Cell* c);
 void	cell_set_filled(Cell* c, int val);
+int		cell_has_possible_values(const Cell* c);
 int		cell_has_unique_value(const Cell* c);
 int		cell_can_have_value(const Cell* c, int v);
 int		cell_get_first_value(const Cell* c);
@@ -98,6 +99,11 @@ inline void cell_set_filled(Cell* c, int val)
 	c->values[val - 1] = 1;
 	c->count = 1;
 	c->unique_value = val;
+}
+
+inline int cell_has_possible_values(const Cell* c)
+{
+	return (c->count > 0);
 }
 
 // Renvoie 1 si la case possède un chiffre unique, 0 sinon
@@ -245,7 +251,7 @@ int sudoku_print(Sudoku* s)
 			else
 				printf(". ");
 
-			
+			/*
 			// Affichage des valeurs possibles pour chaque case
 			int k;
 			printf("(");
@@ -253,7 +259,7 @@ int sudoku_print(Sudoku* s)
 				if (cell_can_have_value(sudoku_get_cell(s, i, j), k + 1))
 					printf("%d ", k + 1);
 			printf(")  ");
-			
+			*/
 		}
 		printf("\n");
 	}
@@ -347,6 +353,12 @@ int sudoku_make_choice(Sudoku* s)
 		for (j = 0; j < s->value_range; j++)
 		{
 			Cell* c = sudoku_get_cell(s, i, j);
+			if (!cell_has_possible_values(c))
+			{
+				printf("No choice available. A wrong guess was taken.\n");
+				return -1;
+			}
+
 			if (!cell_has_unique_value(c))
 			{
 				cell_set_filled(c, cell_get_first_value(c));
@@ -355,6 +367,7 @@ int sudoku_make_choice(Sudoku* s)
 			}
 		}
 	}
+	printf("This sudoku has no pending guess. Why are you even calling this function ?\n");
 	return 0;
 }
 
