@@ -267,7 +267,7 @@ int sudoku_print(Sudoku* s)
 				if (cell_can_have_value(sudoku_get_cell(s, i, j), k + 1))
 					printf("%d", k + 1);
 				else
-					printf(".", k + 1);
+					printf(".");
 			printf(")  ");
 			
 		}
@@ -344,6 +344,27 @@ inline int sudoku_update_block(Sudoku* s, int index)
 	return sudoku_update_INTERNAL(s, &sudoku_get_block_cell, index);
 }
 
+// Choisit une valeur arbitraire parmis une des cases à plusieurs possibilités
+// ATTENTION : à n'utiliser qu'en cas de blocage
+// retourne 1 si un choix est fait, 0 sinon (= fin du sudoku puisque 100% value unique)
+int sudoku_make_choice(Sudoku* s) 
+{
+    int i,j;
+    for(i=0; i < s->value_range; i++)
+    {
+        for(j=0; j < s->value_range; j++)
+        {
+            Cell* c = sudoku_get_cell(s, i, j);
+            if (cell_has_unique_value(c) == 0)
+            {
+                cell_force_set_value(c, cell_get_first_value(c));
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 // MMMMAAAAAAAAIIIINNNN
 int main(int argc, char* argv[])
 {
@@ -369,8 +390,7 @@ int main(int argc, char* argv[])
                 }
                 sudoku_print(s);
             }
-        end = 0;
-        
+        end = sudoku_make_choice(s);
     }
 
 	sudoku_free(s);
