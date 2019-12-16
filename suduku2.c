@@ -12,6 +12,7 @@ typedef struct _cell
 	int values_size;
 	int count;
 	int unique_value;
+	omp_lock_t lock;
 } Cell;
 
 typedef struct _action {
@@ -32,6 +33,15 @@ typedef struct _sudoku
 	int dim;
 	int data_size;
 	int value_range;
+	char blocked;
+	char dirty;
+	char dirty_tmp;
+	char* dirty_rows;
+	char* dirty_rows_tmp;
+	char* dirty_columns;
+	char* dirty_columns_tmp;
+	char* dirty_blocks;
+	char* dirty_blocks_tmp;
 } Sudoku;
 
 int		cell_init(Sudoku* s, Cell* c, int value);
@@ -54,10 +64,11 @@ Cell*	sudoku_get_row_cell(Sudoku* s, int row, int index);
 Cell*	sudoku_get_column_cell(Sudoku* s, int col, int index);
 Cell*	sudoku_get_block_cell(Sudoku* s, int block, int index);
 int		sudoku_get_cell_block(Sudoku* s, int row, int col);
+void	sudoku_clear_tmp_dirty_bits(Sudoku* s);
 int		sudoku_force_set_value(Sudoku* s, Cell* c, int v);
-int 	sudoku_update_row(Sudoku* s, int index);
-int		sudoku_update_column(Sudoku* s, int index);
-int 	sudoku_update_block(Sudoku* s, int index);
+void	sudoku_update_row(Sudoku* s, int index);
+void	sudoku_update_column(Sudoku* s, int index);
+void	sudoku_update_block(Sudoku* s, int index);
 int		sudoku_make_choice(Sudoku* s, int choice_number);
 void 	sudoku_print(Sudoku* s);
 
@@ -143,7 +154,7 @@ void stack_print(Stack* st)
 }
 
 
-// ================================================================================= //
+// =================================================================================
 
 
 // Initialise une case avec une valeur donnée (0 si vide). Retourne 1 si réussi, 0 sinon.
@@ -152,6 +163,7 @@ int cell_init(Sudoku* s, Cell* c, int value)
 	c->values = (char*)malloc(s->value_range * sizeof(char));
 	if (c->values == NULL) return 0;
 	c->values_size = s->value_range;
+	omp_init_lock(&c->lock);
 
 	if (value == 0)
 		cell_set_empty(c);
@@ -164,6 +176,7 @@ int cell_init(Sudoku* s, Cell* c, int value)
 // Libère les ressources allouées pour une case. NE LIBERE PAS LA CASE EN ELLE MEME.
 void cell_free(Cell* c)
 {
+	omp_destroy_lock(&c->lock);
 	free(c->values);
 	c->values = NULL;
 	c->values_size = 0;
@@ -172,7 +185,7 @@ void cell_free(Cell* c)
 }
 
 // Indique qu'une case peut contenir toutes les valeurs
-inline void cell_set_empty(Cell* c)
+__inline void cell_set_empty(Cell* c)
 {
 	memset(c->values, 1, c->values_size * sizeof(char));
 	c->count = c->values_size;
@@ -180,7 +193,7 @@ inline void cell_set_empty(Cell* c)
 }
 
 // Indique qu'une case est occupée par une seule valeur
-inline void cell_set_filled(Cell* c, int val)
+__inline void cell_set_filled(Cell* c, int val)
 {
 	memset(c->values, 0, c->values_size * sizeof(char));
 	c->values[val - 1] = 1;
@@ -189,30 +202,30 @@ inline void cell_set_filled(Cell* c, int val)
 }
 
 // Renvoie 0 si la case n'a aucune valeur possible : le sudoku est cassé
-inline int cell_has_possible_values(const Cell* c)
+__inline int cell_has_possible_values(const Cell* c)
 {
 	return (c->count > 0);
 }
 
 // Renvoie 1 si la case possède un chiffre unique, 0 sinon
-inline int cell_has_unique_value(const Cell* c)
+__inline int cell_has_unique_value(const Cell* c)
 {
 	return (c->count == 1);
 }
 
-inline int cell_can_have_value(const Cell* c, int v)
+__inline int cell_can_have_value(const Cell* c, int v)
 {
 	return (int)(c->values[v - 1]);
 }
 
 // Renvoie la 1ere valeur trouvée
-inline int cell_get_first_value(const Cell* c)
+__inline int cell_get_first_value(const Cell* c)
 {
 	return cell_get_xth_value(c, 1);
 }
 
 // Renvoie la xeme valeur trouvée
-inline int cell_get_xth_value(const Cell* c, int x)
+__inline int cell_get_xth_value(const Cell* c, int x)
 {
 	int count = 0;
 	int i;
@@ -228,7 +241,7 @@ inline int cell_get_xth_value(const Cell* c, int x)
 }
 
 // Renvoie la valeure unique d'une case, 0 sinon
-inline int cell_get_unique_value(const Cell* c) {
+__inline int cell_get_unique_value(const Cell* c) {
 	if (!cell_has_unique_value(c))
 		return 0;
 	else
@@ -236,7 +249,7 @@ inline int cell_get_unique_value(const Cell* c) {
 }
 
 // Indique que la case peut contenir la valeur n
-inline int cell_set_value(Cell* c, int v)
+__inline int cell_set_value(Cell* c, int v)
 {
 	if (c->values[v - 1] == 1)
 		return 0;
@@ -248,7 +261,7 @@ inline int cell_set_value(Cell* c, int v)
 }
 
 // Indique que la case ne peut pas contenir la valeur n
-inline int cell_unset_value(Cell* c, int v)
+__inline int cell_unset_value(Cell* c, int v)
 {
 	if (c->values[v - 1] == 0)
 		return 0;
@@ -278,16 +291,47 @@ Sudoku* sudoku_create(FILE* input)
 
 	s = (Sudoku*)malloc(sizeof(Sudoku));
 	if (s == NULL) return NULL;
+	s->data_size = 0;
 
 	s->stack = stack_init();
-	if (s->stack == NULL) { free(s); return NULL; }
+	if (s->stack == NULL) { sudoku_free(s); return NULL; }
 
 	s->data = (Cell*)malloc(data_size * sizeof(Cell));
-	if (s->data == NULL) { free(s->stack); free(s); return NULL; }
+	if (s->data == NULL) { sudoku_free(s); return NULL; }
+
+	// Row dirty bits
+	s->dirty_rows = (char*)malloc(value_range * sizeof(char));
+	if (s->dirty_rows == NULL) { sudoku_free(s); return NULL; }
+	memset(s->dirty_rows, 1, value_range * sizeof(char));
+
+	s->dirty_rows_tmp = (char*)malloc(value_range * sizeof(char));
+	if (s->dirty_rows_tmp == NULL) { sudoku_free(s); return NULL; }
+	memset(s->dirty_rows_tmp, 0, value_range * sizeof(char));
+
+	// Column dirty bits
+	s->dirty_columns= (char*)malloc(value_range * sizeof(char));
+	if (s->dirty_columns == NULL) { sudoku_free(s); return NULL; }
+	memset(s->dirty_columns, 1, value_range * sizeof(char));
+
+	s->dirty_columns_tmp = (char*)malloc(value_range * sizeof(char));
+	if (s->dirty_columns_tmp == NULL) { sudoku_free(s); return NULL; }
+	memset(s->dirty_columns_tmp, 0, value_range * sizeof(char));
+
+	// Block dirty bits
+	s->dirty_blocks = (char*)malloc(value_range * sizeof(char));
+	if (s->dirty_blocks == NULL) { sudoku_free(s); return NULL; }
+	memset(s->dirty_blocks, 1, value_range * sizeof(char));
+
+	s->dirty_blocks_tmp = (char*)malloc(value_range * sizeof(char));
+	if (s->dirty_blocks_tmp == NULL) { sudoku_free(s); return NULL; }
+	memset(s->dirty_blocks_tmp, 0, value_range * sizeof(char));
 
 	s->dim = dim;
 	s->value_range = value_range;
 	s->data_size = data_size;
+	s->blocked = 0;
+	s->dirty = 1;
+	s->dirty_tmp = 0;
 
 	for (i = 0; i < s->data_size; i++)
 	{
@@ -301,48 +345,118 @@ Sudoku* sudoku_create(FILE* input)
 void sudoku_free(Sudoku* s)
 {
 	int i;
+
 	for (i = 0; i < s->data_size; i++)
 		cell_free(&(s->data[i]));
 	free(s->data);
 	s->data = NULL;
 	s->data_size = 0;
+	
 	stack_free(s->stack);
 	s->stack = NULL;
+
+	free(s->dirty_rows);
+	free(s->dirty_columns);
+	free(s->dirty_blocks);
+	s->dirty_rows = s->dirty_columns = s->dirty_blocks = NULL;
+
+	free(s->dirty_rows_tmp);
+	free(s->dirty_columns_tmp);
+	free(s->dirty_blocks_tmp);
+	s->dirty_rows_tmp = s->dirty_columns_tmp = s->dirty_blocks_tmp = NULL;
+	
 	free(s);
 }
 
 // Retourne la case du sudoku à la ligne/colonne indiquée
-inline Cell* sudoku_get_cell(Sudoku* s, int row, int col)
+__inline Cell* sudoku_get_cell(Sudoku* s, int row, int col)
 {
 	return &(s->data[row * s->value_range + col]);
 }
 
 // Retourne une cellule d'une ligne
-inline Cell* sudoku_get_row_cell(Sudoku* s, int row, int index)
+__inline Cell* sudoku_get_row_cell(Sudoku* s, int row, int index)
 {
 	return sudoku_get_cell(s, row, index);
 }
 
 // Retourne une cellule d'une colonne
-inline Cell* sudoku_get_column_cell(Sudoku* s, int col, int index)
+__inline Cell* sudoku_get_column_cell(Sudoku* s, int col, int index)
 {
 	return sudoku_get_cell(s, index, col);
 }
 
 // Retourne l'identifiant du bloc contenant la case à la ligne/colonne indiqué
-inline int sudoku_get_cell_block(Sudoku* s, int row, int col)
+__inline int sudoku_get_cell_block(Sudoku* s, int row, int col)
 {
 	return (row / s->dim) * s->dim + (col / s->dim);
 }
 
 // Retourne une cellule d'un bloc
-inline Cell* sudoku_get_block_cell(Sudoku* s, int group, int index)
+__inline Cell* sudoku_get_block_cell(Sudoku* s, int group, int index)
 {
 	return sudoku_get_cell(s, (group / s->dim) * s->dim + (index / s->dim), (group % s->dim) * s->dim + (index % s->dim));
 }
 
+__inline void sudoku_set_row_dirty_INTERNAL(Sudoku* s, int row)
+{
+	s->dirty_tmp = 1;
+	s->dirty_rows_tmp[row] = 1;
+}
+
+__inline void sudoku_set_column_dirty_INTERNAL(Sudoku* s, int col)
+{
+	s->dirty_tmp = 1;
+	s->dirty_columns_tmp[col] = 1;
+}
+
+__inline void sudoku_set_block_dirty_INTERNAL(Sudoku* s, int block)
+{
+	s->dirty_tmp = 1;
+	s->dirty_blocks_tmp[block] = 1;
+}
+
+__inline void sudoku_set_dirty_INTERNAL(Sudoku* s, int row, int col)
+{
+	sudoku_set_row_dirty_INTERNAL(s, row);
+	sudoku_set_column_dirty_INTERNAL(s, col);
+	sudoku_set_block_dirty_INTERNAL(s, sudoku_get_cell_block(s, row, col));
+}
+
+__inline void sudoku_dirty_setter_row(Sudoku* s, int row, int index)
+{
+	sudoku_set_dirty_INTERNAL(s, row, index);
+}
+
+__inline void sudoku_dirty_setter_column(Sudoku* s, int col, int index)
+{
+	sudoku_set_dirty_INTERNAL(s, index, col);
+}
+
+__inline void sudoku_dirty_setter_block(Sudoku* s, int block, int index)
+{
+	sudoku_set_dirty_INTERNAL(s, (block / s->dim) * s->dim + (index / s->dim), (block % s->dim) * s->dim + (index % s->dim));
+}
+
+__inline void sudoku_clear_tmp_dirty_bits(Sudoku* s)
+{
+	s->dirty_tmp = 0;
+	memset(s->dirty_rows_tmp, 0, s->value_range * sizeof(char));
+	memset(s->dirty_columns_tmp, 0, s->value_range * sizeof(char));
+	memset(s->dirty_blocks_tmp, 0, s->value_range * sizeof(char));
+}
+
+__inline void sudoku_apply_dirty_bits(Sudoku* s)
+{
+	s->dirty = s->dirty_tmp;
+	memcpy(s->dirty_rows, s->dirty_rows_tmp, s->value_range * sizeof(char));
+	memcpy(s->dirty_columns, s->dirty_columns_tmp, s->value_range * sizeof(char));
+	memcpy(s->dirty_blocks, s->dirty_blocks_tmp, s->value_range * sizeof(char));
+	sudoku_clear_tmp_dirty_bits(s);
+}
+
 // Force la valeur d'une case à v
-inline int sudoku_force_set_value(Sudoku* s, Cell* c, int v)
+__inline int sudoku_force_set_value(Sudoku* s, Cell* c, int v)
 {
 	if (c->values[v - 1] == 1 && c->count == 1)
 		return 0;
@@ -390,19 +504,35 @@ void sudoku_print(Sudoku* s)
 		printf("\n");
 	}
 	printf("+++++++++++++++++++++++++++++\n");
+	printf("rows : ");
+	for (i = 0; i < s->value_range; i++)
+		printf("%d ", s->dirty_rows[i]);
+	printf("\ncols : ");
+	for (i = 0; i < s->value_range; i++)
+		printf("%d ", s->dirty_columns[i]);
+	printf("\nblocks : ");
+	for (i = 0; i < s->value_range; i++)
+		printf("%d ", s->dirty_blocks[i]);
+	printf("\n");
+	printf("+++++++++++++++++++++++++++++\n");
 }
 
 // Fonction interne mettant à jour les cases selon un *getter* donné.
 // Cf sudoku_update_{row|column|block}
-int sudoku_update_INTERNAL(Sudoku* s, Cell* (*getter)(Sudoku* _s, int _group_index, int _cell_index), int index)
+void sudoku_update_INTERNAL
+(
+	Sudoku* s, 
+	Cell* (*getter)(Sudoku* _s, int _group_index, int _cell_index), 
+	void (*dirty_setter)(Sudoku* _s, int _group_index, int _cell_index),
+	int group
+)
 {
 	int i, j, m;
-	int modif = 0;
 
 	// Si une valeur est "écrite" dans une case, alors on peut retirer cette valeur des valeurs possibles dans les autres cases du groupe
 	for (i = 0; i < s->value_range; i++)
 	{
-		int v = cell_get_unique_value(getter(s, index, i));
+		int v = cell_get_unique_value(getter(s, group, i));
 
 		if (v != 0)
 		{
@@ -410,13 +540,18 @@ int sudoku_update_INTERNAL(Sudoku* s, Cell* (*getter)(Sudoku* _s, int _group_ind
 			{
 				if (i != j)
 				{
-					Cell* c = getter(s, index, j);
+					Cell* c = getter(s, group, j);
 					m = cell_unset_value(c, v);
 					if (m == -1)
-						return -1;
-					modif |= m;
+					{
+						s->blocked = 1;
+						return;
+					}
 					if (m)
+					{
+						dirty_setter(s, group, j);
 						stack_push(s->stack, c, v);
+					}
 				}
 
 			}
@@ -428,14 +563,18 @@ int sudoku_update_INTERNAL(Sudoku* s, Cell* (*getter)(Sudoku* _s, int _group_ind
 	{
 		int v = i + 1;
 		Cell* unique = NULL;
+		int unique_index = -1;
 
 		for (j = 0; j < s->value_range; j++)
 		{
-			Cell* c = getter(s, index, j);
+			Cell* c = getter(s, group, j);
 			if (cell_can_have_value(c, v))
 			{
 				if (unique == NULL)
+				{
 					unique = c;
+					unique_index = j;
+				}
 				else
 				{
 					unique = NULL;
@@ -448,30 +587,32 @@ int sudoku_update_INTERNAL(Sudoku* s, Cell* (*getter)(Sudoku* _s, int _group_ind
 		{
 			m = sudoku_force_set_value(s, unique, v);
 			if (m == -1)
-				return -1;
-			modif |= m;
+			{
+				s->blocked = 1;
+				return;
+			}
+			if (m)
+				dirty_setter(s, group, unique_index);
 		}
 	}
-
-	return modif;
 }
 
 // Met à jour les valeurs possibles pour une ligne donnée
-inline int sudoku_update_row(Sudoku* s, int index)
+__inline void sudoku_update_row(Sudoku* s, int index)
 {
-	return sudoku_update_INTERNAL(s, &sudoku_get_row_cell, index);
+	sudoku_update_INTERNAL(s, &sudoku_get_row_cell, &sudoku_dirty_setter_row, index);
 }
 
 // Met à jour les valeurs possibles pour une colonne donnée
-inline int sudoku_update_column(Sudoku* s, int index)
+__inline void sudoku_update_column(Sudoku* s, int index)
 {
-	return sudoku_update_INTERNAL(s, &sudoku_get_column_cell, index);
+	sudoku_update_INTERNAL(s, &sudoku_get_column_cell, &sudoku_dirty_setter_column, index);
 }
 
 // Met à jour les valeurs possibles pour un bloc donné
-inline int sudoku_update_block(Sudoku* s, int index)
+__inline void sudoku_update_block(Sudoku* s, int index)
 {
-	return sudoku_update_INTERNAL(s, &sudoku_get_block_cell, index);
+	sudoku_update_INTERNAL(s, &sudoku_get_block_cell, &sudoku_dirty_setter_block, index);
 }
 
 // Choisit une valeur arbitraire parmis une des cases à plusieurs possibilités
@@ -498,6 +639,7 @@ int sudoku_make_choice(Sudoku* s, int choice_number)
 						{
 							stack_push_breakpoint(s->stack, count_v);
 							sudoku_force_set_value(s, c, k + 1);
+							sudoku_set_dirty_INTERNAL(s, i, j);
 							printf("choosing %d for cell %d:%d (test %d)\n", k + 1, i, j, count_v);
 							return 1;
 						}
@@ -562,41 +704,53 @@ int sudoku_backtrack(Sudoku* s)
 
 void sudoku_resolution(Sudoku* s)
 {
-	int max_it = 10000;
-	int end, it, modif, ret, i, check;
+	int max_it = 100000;
+	int end, it, i, check;
 	it = 0;
 	end = 1;
+
+
 	while (end) {
-		modif = 1;
-		while (modif) // Tant que la déduction fonctionne
-		{
-			modif = 0;
-			ret = -1;
+		s->blocked = 0;
+
+		do {
 			for (i = 0; i < s->value_range; i++)
 			{
-				ret = sudoku_update_row(s, i);
-				if (ret == -1)
-					break;
-				modif |= ret;
-				ret = sudoku_update_column(s, i);
-				if (ret == -1)
-					break;
-				modif |= ret;
-				ret = sudoku_update_block(s, i);
-				if (ret == -1)
-					break;
-				modif |= ret;
+				if (s->dirty_rows[i])
+				{
+					#pragma omp task
+					sudoku_update_row(s, i);
+				}
+
+				if (s->dirty_columns[i])
+				{
+					#pragma omp task
+					sudoku_update_column(s, i);
+				}
+
+				if (s->dirty_blocks[i])
+				{
+					#pragma omp task
+					sudoku_update_block(s, i);
+				}
 			}
+
+			#pragma omp taskwait
+
+			sudoku_apply_dirty_bits(s);
+
 			printf("----- %d\n", it);
 			it++;
-			if (ret == -1)
+
+			if (s->blocked)
 				break;
-		}
+
+		} while (s->dirty);
 
 		if (it > max_it)
 			return;
 		
-		if (ret == -1)
+		if (s->blocked)
 			check = 0;
 		else
 			check = sudoku_is_dead(s);
@@ -615,7 +769,6 @@ void sudoku_resolution(Sudoku* s)
 		}
 		else // il reste des cases vides
 		{
-			sudoku_print(s);
 			end = sudoku_make_choice(s, 0);
 		}
 	}
@@ -633,6 +786,8 @@ int main(int argc, char* argv[])
 
 	sudoku_print(s);
 
+	#pragma omp parallel
+	#pragma omp single nowait
 	sudoku_resolution(s);
 
 	sudoku_print(s);
