@@ -6,6 +6,7 @@
 
 #include <omp.h>
 
+
 typedef struct _cell
 {
 	char* values;
@@ -14,13 +15,26 @@ typedef struct _cell
 	int unique_value;
 } Cell;
 
+typedef struct _action {
+    char val;
+    Cell* cell;
+    struct _action* next;
+} Action;
+
+typedef struct _stack {
+    Action* first;
+    int len;
+} Stack;
+
 typedef struct _sudoku
 {
 	Cell* data;
+    Stack* stack;
 	int dim;
 	int data_size;
 	int value_range;
 } Sudoku;
+
 
 typedef enum _group_type
 {
@@ -30,16 +44,20 @@ typedef enum _group_type
 	LAST_GROUP_TYPE
 } GroupType;
 
+
+
+
 int		cell_init(Sudoku* s, Cell* c, int value);
 void	cell_free(Cell* c);
 void	cell_set_empty(Cell* c);
 void	cell_set_filled(Cell* c, int val);
+int     cell_has_possible_values(const Cell* c);
 int		cell_has_unique_value(const Cell* c);
 int		cell_can_have_value(const Cell* c, int v);
-int		cell_get_first_value(const Cell* c);
+int		cell_get_xth_value(const Cell* c, int x);
+int     cell_get_first_value(const Cell* c);
 int		cell_get_unique_value(const Cell* c);
 int 	cell_set_value(Cell* c, int v);
-int     cell_force_set_value(Cell* c, int v);
 int 	cell_unset_value(Cell* c, int v);
 
 Sudoku*	sudoku_create(FILE* input);
@@ -49,14 +67,93 @@ Cell*	sudoku_get_row_cell(Sudoku* s, int row, int index);
 Cell*	sudoku_get_column_cell(Sudoku* s, int col, int index);
 Cell*	sudoku_get_block_cell(Sudoku* s, int block, int index);
 int		sudoku_get_cell_block(Sudoku* s, int row, int col);
+int     sudoku_force_set_value(Sudoku* s, Cell* c, int v);
 int 	sudoku_update_row(Sudoku* s, int index);
 int	    sudoku_update_column(Sudoku* s, int index);
 int 	sudoku_update_block(Sudoku* s, int index);
-int     sudoku_make_choice(Sudoku* s);
+int     sudoku_make_choice(Sudoku* s, int choice_number);
 int 	sudoku_print(Sudoku* s);
 
+void    stack_push(Stack* st, Cell* c, int val);
+void    stack_push_breakpoint(Stack* st, int val);
+Action  stack_pop(Stack* st);
+Stack*  stack_init();
+void    stack_free(Stack* st);
+void    stack_print(Stack* st);
 
-// =============================================================== //
+// ================================================================================= //
+
+// Crée la pile (malloc du pointeur)
+Stack* stack_init()
+{
+    Stack* st = malloc(sizeof(Stack));
+    st->first = NULL;
+    st->len = 0;
+    return st;
+}
+
+// Libère la pile (et ce qu'il reste dedans)
+void stack_free(Stack* st)
+{
+    Action* to_free = NULL;
+    while(st->first != NULL)
+    {
+        to_free = st->first;
+        st->first = to_free->next;
+        free(to_free);
+    }
+    free(st);
+}
+
+// Rajoute un élément dans la pile
+void stack_push(Stack* st, Cell* c, int val)
+{
+    Action* new = malloc(sizeof(Action));
+    new->val = val;
+    new->cell = c;
+    new->next = st->first;
+    st->first = new;
+    st->len += 1;
+}
+
+// Rajoute un point critique
+void stack_push_breakpoint(Stack* st, int val)
+{
+    Action* new = malloc(sizeof(Action));
+    new->val  = val;
+    new->cell = NULL;
+    new->next = st->first;
+    st->first = new;
+    st->len += 1;
+}
+
+// Renvoie une copie du premier élément et le détruit de la pile
+Action stack_pop(Stack* st)
+{
+    Action ret_action;
+    Action* first_action = st->first;
+    ret_action.cell = first_action->cell;
+    ret_action.val = first_action->val;
+    ret_action.next = NULL;
+    st->first = first_action->next;
+    free(first_action);
+    st->len -= 1;
+    return ret_action;
+}
+
+void stack_print(Stack* st)
+{
+    int i = 0;
+    Action* it = st->first;
+    while(it != NULL)
+    {
+        printf("%d : (%p, %d) \n", i++, it->cell, it->val);
+        it = it->next;
+    }
+}
+
+
+// ================================================================================= //
 
 
 // Initialise une case avec une valeur donnée (0 si vide). Retourne 1 si réussi, 0 sinon.
@@ -101,6 +198,12 @@ inline void cell_set_filled(Cell* c, int val)
 	c->unique_value = val;
 }
 
+// Renvoie 0 si la case n'a aucune valeur possible : le sudoku est cassé
+inline int cell_has_possible_values(const Cell* c)
+{
+	return (c->count > 0);
+}
+
 // Renvoie 1 si la case possède un chiffre unique, 0 sinon
 inline int cell_has_unique_value(const Cell* c)
 {
@@ -112,13 +215,23 @@ inline int cell_can_have_value(const Cell* c, int v)
 	return (int)(c->values[v - 1]);
 }
 
-// Renvoie la première valeur trouvée
+// Renvoie la 1ere valeur trouvée
 inline int cell_get_first_value(const Cell* c)
 {
+    return cell_get_xth_value(c, 1);
+}
+
+// Renvoie la xeme valeur trouvée
+inline int cell_get_xth_value(const Cell* c, int x)
+{
+    int count = 0;
 	int i;
 	for (i = 0; i < c->values_size; i++) {
 		if (c->values[i]) {
-			return i + 1;
+            count ++;
+            if (count >= x) {
+                return i + 1;
+            }
 		}
 	}
 	return 0;
@@ -138,23 +251,9 @@ inline int cell_set_value(Cell* c, int v)
 	if (c->values[v - 1] == 1)
         return 0;
     c->values[v - 1] = 1;
-    if (c->count == 1)
-        c->unique_value = 0;
     c->count++;
-    return 1;
-}
-
-// Force la valeur d'une case à v
-inline int cell_force_set_value(Cell* c, int v)
-{
-    if (c->values[v - 1] == 1 && c->count == 1)
-        return 0;
-    int i;
-    for(i=0; i < c->values_size; i++)
-        c->values[i] = 0;
-    c->values[v - 1] = 1;
-    c->unique_value = v;
-    c->count = 1;
+    if (c->count != 1)
+        c->unique_value = 0;
     return 1;
 }
 
@@ -167,8 +266,12 @@ inline int cell_unset_value(Cell* c, int v)
     c->count--;
     if (c->count == 1)
         c->unique_value = cell_get_first_value(c);
+    if (c->count == 0)
+        return -1;
     return 1;
 }
+
+// ================================================================================= //
 
 // Crée un sudoku à partir d'un fichier de données d'entrée
 Sudoku* sudoku_create(FILE* input)
@@ -198,6 +301,8 @@ Sudoku* sudoku_create(FILE* input)
 		if (fscanf(input, "%d", &v) <= 0 || !cell_init(s, &(s->data[i]), v)) { sudoku_free(s); return NULL; }
 	}
 
+    s->stack = stack_init();
+
 	return s;
 }
 
@@ -210,6 +315,7 @@ void sudoku_free(Sudoku* s)
 	free(s->data);
 	s->data = NULL;
 	s->data_size = 0;
+    stack_free(s->stack);
 	free(s);
 }
 
@@ -243,6 +349,25 @@ inline Cell* sudoku_get_block_cell(Sudoku* s, int group, int index)
 	return sudoku_get_cell(s, (group / s->dim) * s->dim + (index / s->dim), (group % s->dim) * s->dim + (index % s->dim));
 }
 
+// Force la valeur d'une case à v
+inline int sudoku_force_set_value(Sudoku *s, Cell* c, int v)
+{
+    if (c->values[v - 1] == 1 && c->count == 1)
+        return 0;
+    int i, m;
+    for(i=0; i < c->values_size; i++)
+        if (v != i+1)
+        {
+            m = cell_unset_value(c, i+1);
+            if (m == -1)
+                return -1;
+            if (m)
+                stack_push(s->stack, c, i+1);
+        }
+            
+    return 1;
+}
+
 // Affiche la grille de sudoku
 int sudoku_print(Sudoku* s)
 {
@@ -260,7 +385,7 @@ int sudoku_print(Sudoku* s)
 			else
 				printf(". ");
 
-			
+			/*
 			// Affichage des valeurs possibles pour chaque case
 			int k;
 			printf("(");
@@ -270,8 +395,7 @@ int sudoku_print(Sudoku* s)
 				else
 					printf(".");
 			printf(")  ");
-            
-			
+            */ 	
 		}
 		printf("\n");
 	}
@@ -282,7 +406,7 @@ int sudoku_print(Sudoku* s)
 // Cf sudoku_update_{row|column|block}
 int sudoku_update_INTERNAL(Sudoku* s, Cell* (*getter)(Sudoku* _s, int _group_index, int _cell_index), int index)
 {
-	int i, j;
+	int i, j, m;
     int modif = 0;
 
 	// Si une valeur est "écrite" dans une case, alors on peut retirer cette valeur des valeurs possibles dans les autres cases du groupe
@@ -295,7 +419,16 @@ int sudoku_update_INTERNAL(Sudoku* s, Cell* (*getter)(Sudoku* _s, int _group_ind
 			for (j = 0; j < s->value_range; j++)
 			{
 				if (i != j)
-					modif |= cell_unset_value(getter(s, index, j), v);
+                {
+                    Cell* c = getter(s, index, j);
+                    m = cell_unset_value(c, v);
+                    if (m == -1)
+                        return -1;
+                    modif |= m;
+                    if (m)
+                        stack_push(s->stack, c, v);
+                }
+					
 			}
 		}
 	}
@@ -322,7 +455,10 @@ int sudoku_update_INTERNAL(Sudoku* s, Cell* (*getter)(Sudoku* _s, int _group_ind
 		}
 
 		if (unique != NULL)
-			modif |= cell_force_set_value(unique, v);
+			m = sudoku_force_set_value(s, unique, v);
+            if (m == -1)
+                return -1;
+            modif |= m;
 	}
 
     return modif;
@@ -349,10 +485,11 @@ inline int sudoku_update_block(Sudoku* s, int index)
 // Choisit une valeur arbitraire parmis une des cases à plusieurs possibilités
 // ATTENTION : à n'utiliser qu'en cas de blocage
 // retourne 1 si un choix est fait, 0 sinon (= fin du sudoku puisque 100% value unique)
-int sudoku_make_choice(Sudoku* s) 
+int sudoku_make_choice(Sudoku* s, int choice_number) 
 {
     printf("BLOCKED : MAKING CHOICE -> ");
-    int i,j;
+    int i,j, count, val;
+    count = 0;
     for(i=0; i < s->value_range; i++)
     {
         for(j=0; j < s->value_range; j++)
@@ -360,46 +497,162 @@ int sudoku_make_choice(Sudoku* s)
             Cell* c = sudoku_get_cell(s, i, j);
             if (cell_has_unique_value(c) == 0)
             {
-                cell_force_set_value(c, cell_get_first_value(c));
-                printf("choosing for cell %d %d\n", i,j);
-                return 1;
+                val = 1;
+                int count_v = 0;
+                while (val != 0)
+                {
+                    count_v ++;
+                    val = cell_get_xth_value(c, count_v);
+                    if (val != 0 && count + count_v > choice_number)
+                    {
+                        stack_push_breakpoint(s->stack, count + count_v);
+                        sudoku_force_set_value(s, c, val);
+                        printf("choosing %d for cell %d:%d (test %d)\n", val,i,j, count + count_v);
+                        return 1;
+                    }
+                }
+                count += count_v;
+                
+                // if (count + c->count > choice_number)
+                // {
+                //     int value_x = choice_number - count;
+                //     printf("VALUE : %d = %d - %d + 1\n", value_x, choice_number, count);
+                //     val = cell_get_xth_value(c, value_x);
+                //     if (val == 0) printf("NIQUE TOI PUTIN\n");
+                //     stack_push_breakpoint(s->stack, count + value_x + 1);
+                //     sudoku_force_set_value(s, c, val);
+                //     printf("choosing %d for cell %d:%d (test %d)\n", val,i,j, count + value_x);
+                //     return 1;
+                // }
+                // count += c->count;
             }
         }
+    }
+    printf("no more choices\n");
+    return 0;
+}
+
+// Renvoie 0 si les sudoku est faux, 1+ sinon (nbr de cases encore vides)
+int sudoku_is_dead(Sudoku* s)
+{
+    int i,j;
+    int ret = 1;
+    for(i=0; i < s->value_range; i++)
+    {
+        for(j=0; j < s->value_range; j++)
+        {
+            Cell* c = sudoku_get_cell(s, i, j);
+            if (!cell_has_unique_value(c))
+            {
+                if (!cell_has_possible_values(c))
+			    {
+				    return 0;
+			    }
+                ret++;
+            }
+        }
+    }
+    return ret;
+}
+
+
+void sudoku_bactrack_full(Sudoku* s)
+{
+    Action a;
+    while(s->stack->first != NULL)
+    {
+        a = stack_pop(s->stack);
+        cell_set_value(a.cell, a.val);
+    }
+}
+
+int sudoku_backtrack(Sudoku* s)
+{
+    Action a;
+    while(s->stack->first != NULL)
+    {
+        a = stack_pop(s->stack);
+        if (a.cell == NULL)
+            return a.val;
+        cell_set_value(a.cell, a.val);
     }
     return 0;
 }
 
+void sudoku_resolution(Sudoku* s)
+{
+    int max_it = 1;
+    int end, it, modif, ret, i, check;
+    for(i=0; i*i < s->value_range; i++)
+    {
+        max_it *= 50;
+    }
+    it = 0;
+    end = 1;
+    while (end) {
+        modif = 1;
+        while (modif) // Tant que la déduction fonctionne
+        {
+            modif = 0;
+            for (i = 0; i < s->value_range; i++)
+            {
+                ret = sudoku_update_row(s, i);
+                if (ret == -1)
+                    break;
+                modif |= ret;
+                ret = sudoku_update_column(s, i);
+                if (ret == -1)
+                    break;
+                modif |= ret;
+                ret = sudoku_update_block(s, i);
+                if (ret == -1)
+                    break;
+                modif |= ret;
+            }
+            printf("----- %d\n", it);
+            it++;
+        }
+        if (it > max_it)
+            return;
+        if (ret == -1)
+            check = 0;
+        else
+            check = sudoku_is_dead(s);
+        if (check == 1) // toutes les cases ont une valeur unique
+        {
+            end = 0;
+        }
+        else if (check == 0) // une case ne peut plus être remplie
+        {
+            do {
+                int choice_nbr = sudoku_backtrack(s); // retour précédent
+                end = sudoku_make_choice(s, choice_nbr);
+            } while(end != 1); // end = 1 -> un nouveau choix peut être fait
+        }
+        else // il reste des cases vides
+        {
+            end = sudoku_make_choice(s, 0);
+        }
+    }
+}
+
+// ================================================================================= //
+
 // MMMMAAAAAAAAIIIINNNN
 int main(int argc, char* argv[])
 {
-	int i, modif, end, it, modif_count;
+	int i, modif, end, it;
 	Sudoku* s;
 
 	s = sudoku_create(stdin);
 	if (s == NULL) { fprintf(stderr, "Sudoku initialization failed\n"); return EXIT_FAILURE; }
 
 	sudoku_print(s);
-    end = 1;
-    it = 0;
-    while (end) {
-        modif_count = 0;
-        modif = 1;
-        while (modif_count < 3)
-        {
-            for (i = 0; i < s->value_range; i++)
-            {
-                modif |= sudoku_update_row(s, i);
-                modif |= sudoku_update_column(s, i);
-                modif |= sudoku_update_block(s, i);
-            }
-            // sudoku_print(s);
-            printf("----- %d\n", it++);
-            if (modif)
-                modif_count++;
-        }
-        end = sudoku_make_choice(s);
-    }
+
+    sudoku_resolution(s);
+
     sudoku_print(s);
+
 	sudoku_free(s);
 
 	return EXIT_SUCCESS;
