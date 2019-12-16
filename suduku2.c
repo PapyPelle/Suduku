@@ -59,7 +59,7 @@ int 	sudoku_update_row(Sudoku* s, int index);
 int		sudoku_update_column(Sudoku* s, int index);
 int 	sudoku_update_block(Sudoku* s, int index);
 int		sudoku_make_choice(Sudoku* s, int choice_number);
-int 	sudoku_print(Sudoku* s);
+void 	sudoku_print(Sudoku* s);
 
 void	stack_push(Stack* st, Cell* c, int val);
 void	stack_push_breakpoint(Stack* st, int val);
@@ -362,10 +362,9 @@ inline int sudoku_force_set_value(Sudoku* s, Cell* c, int v)
 }
 
 // Affiche la grille de sudoku
-int sudoku_print(Sudoku* s)
+void sudoku_print(Sudoku* s)
 {
-	static int it = 0;
-	printf("---------------- %d\n", it++);
+	printf("+++++++++++++++++++++++++++++\n");
 	int i, j;
 	int v;
 	for (i = 0; i < s->value_range; i++)
@@ -378,7 +377,7 @@ int sudoku_print(Sudoku* s)
 			else
 				printf(". ");
 
-			
+			/*
 			// Affichage des valeurs possibles pour chaque case
 			int k;
 			printf("(");
@@ -386,11 +385,11 @@ int sudoku_print(Sudoku* s)
 				if (cell_can_have_value(sudoku_get_cell(s, i, j), k + 1))
 					printf("%d", k + 1);
 			printf(")  ");
-			
+			*/
 		}
 		printf("\n");
 	}
-	return it;
+	printf("+++++++++++++++++++++++++++++\n");
 }
 
 // Fonction interne mettant à jour les cases selon un *getter* donné.
@@ -481,8 +480,7 @@ inline int sudoku_update_block(Sudoku* s, int index)
 int sudoku_make_choice(Sudoku* s, int choice_number)
 {
 	printf("BLOCKED : MAKING CHOICE (%d) -> ", s->stack->choices);
-	int i, j, k, count;
-	count = 0;
+	int i, j, k;
 	for (i = 0; i < s->value_range; i++)
 	{
 		for (j = 0; j < s->value_range; j++)
@@ -496,16 +494,16 @@ int sudoku_make_choice(Sudoku* s, int choice_number)
 					if (cell_can_have_value(c, k + 1))
 					{
 						count_v++;
-						if (count + count_v > choice_number)
+						if (count_v > choice_number)
 						{
-							stack_push_breakpoint(s->stack, count + count_v);
+							stack_push_breakpoint(s->stack, count_v);
 							sudoku_force_set_value(s, c, k + 1);
-							printf("choosing %d for cell %d:%d (test %d)\n", k + 1, i, j, count + count_v);
+							printf("choosing %d for cell %d:%d (test %d)\n", k + 1, i, j, count_v);
 							return 1;
 						}
 					}
 				}
-				count += count_v;
+				return 0;
 			}
 		}
 	}
@@ -612,7 +610,7 @@ void sudoku_resolution(Sudoku* s)
 			do {
 				int choice_nbr = sudoku_backtrack(s); // retour précédent
 				end = sudoku_make_choice(s, choice_nbr);
-				printf("Backtraking to choice %d\n", s->stack->choices);
+				printf("Backtraking to choice %d\n", s->stack->choices - 1);
 			} while (end != 1); // end = 1 -> un nouveau choix peut être fait
 		}
 		else // il reste des cases vides
