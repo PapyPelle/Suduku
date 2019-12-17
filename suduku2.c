@@ -755,6 +755,7 @@ void sudoku_resolution(Sudoku* s)
 	it = 0;
 	end = 1;
 
+	printf("Solving using %d threads\n", omp_get_num_threads());
 
 	while (end) {
 		s->blocked = 0;
@@ -786,12 +787,12 @@ void sudoku_resolution(Sudoku* s)
 			sudoku_apply_dirty_bits(s);
 
 			//printf("----- %d\n", it);
-			it++;
-			if (it % 100 == 0)
-			{
-				printf(".");
-				fflush(stdout);
-			}
+			//it++;
+			//if (it % 10000 == 0)
+			//{
+			//	printf("Iteration %d\n", it);
+			//	sudoku_print(s);
+			//}
 
 			if (s->blocked)
 				break;
@@ -839,6 +840,8 @@ int main(int argc, char* argv[])
 	if (s == NULL) { fprintf(stderr, "Sudoku initialization failed\n"); return EXIT_FAILURE; }
 
 	sudoku_print(s);
+
+	omp_set_num_threads(8);
 
 	#pragma omp parallel
 	#pragma omp single nowait
