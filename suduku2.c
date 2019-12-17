@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <mpi.h>
 #include <omp.h>
 
 typedef struct _cell
@@ -834,22 +835,30 @@ void sudoku_resolution(Sudoku* s)
 // MMMMAAAAAAAAIIIINNNN
 int main(int argc, char* argv[])
 {
-	Sudoku* s;
+	int rank, size;
+	MPI_Init(&argc, &argv);
+	MPI_Comm_size(MPI_COMM_WORLD, &size);
+ 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-	s = sudoku_create(stdin);
-	if (s == NULL) { fprintf(stderr, "Sudoku initialization failed\n"); return EXIT_FAILURE; }
+	if (rank == 0) {
+		Sudoku* s;
 
-	sudoku_print(s);
+		s = sudoku_create(stdin);
+		if (s == NULL) { fprintf(stderr, "Sudoku initialization failed\n"); return EXIT_FAILURE; }
 
-	omp_set_num_threads(8);
+		sudoku_print(s);
 
-	#pragma omp parallel
-	#pragma omp single nowait
-	sudoku_resolution(s);
+		omp_set_num_threads(8);
 
-	sudoku_print(s);
+		#pragma omp parallel
+		#pragma omp single nowait
+		sudoku_resolution(s);
 
-	sudoku_free(s);
+		sudoku_print(s);
+
+		sudoku_free(s);
+	}
+	MPI_Finalize();
 
 	return EXIT_SUCCESS;
 }
