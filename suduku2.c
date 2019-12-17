@@ -24,6 +24,7 @@ typedef struct _action {
 typedef struct _stack {
 	Action* first;
 	int choices;
+	omp_lock_t lock;
 } Stack;
 
 typedef struct _sudoku
@@ -88,12 +89,14 @@ Stack* stack_init()
 	if (st == NULL) return NULL;
 	st->first = NULL;
 	st->choices = 0;
+	omp_init_lock(&(st->lock));
 	return st;
 }
 
 // Libère la pile (et ce qu'il reste dedans)
 void stack_free(Stack* st)
 {
+	omp_destroy_lock(&(st->lock));
 	Action* to_free = NULL;
 	while (st->first != NULL)
 	{
@@ -108,37 +111,47 @@ void stack_free(Stack* st)
 void stack_push(Stack* st, Cell* c, int val)
 {
 	Action* new_action = malloc(sizeof(Action));
-	if (new_action == NULL) { printf("Stack push failed"); return; }
+	if (new_action == NULL) { printf("Stack push failed"); abort(); return; }
 	new_action->val = val;
 	new_action->cell = c;
+	omp_set_lock(&(st->lock));
 	new_action->next = st->first;
 	st->first = new_action;
+	omp_unset_lock(&(st->lock));
 }
 
 // Rajoute un point critique
 void stack_push_breakpoint(Stack* st, int val)
 {
 	Action* new_action = malloc(sizeof(Action));
-	if (new_action == NULL) { printf("Stack push failed"); return; }
+	if (new_action == NULL) { printf("Stack push failed"); abort(); return; }
 	new_action->val = val;
 	new_action->cell = NULL;
+	omp_set_lock(&(st->lock));
 	new_action->next = st->first;
 	st->first = new_action;
 	st->choices += 1;
+	omp_unset_lock(&(st->lock));
 }
 
 // Renvoie une copie du premier élément et le détruit de la pile
 Action stack_pop(Stack* st)
 {
 	Action ret_action;
-	Action* first_action = st->first;
+	Action* first_action;
+
+	omp_set_lock(&(st->lock));
+	first_action = st->first;
+	st->first = first_action->next;
+	if (first_action->cell == NULL)
+		st->choices -= 1;
+	omp_unset_lock(&(st->lock));
+
 	ret_action.cell = first_action->cell;
 	ret_action.val = first_action->val;
 	ret_action.next = NULL;
-	st->first = first_action->next;
 	free(first_action);
-	if (ret_action.cell == NULL)
-		st->choices -= 1;
+
 	return ret_action;
 }
 
@@ -163,7 +176,7 @@ int cell_init(Sudoku* s, Cell* c, int value)
 	c->values = (char*)malloc(s->value_range * sizeof(char));
 	if (c->values == NULL) return 0;
 	c->values_size = s->value_range;
-	omp_init_lock(&c->lock);
+	omp_init_lock(&(c->lock));
 
 	if (value == 0)
 		cell_set_empty(c);
@@ -176,7 +189,7 @@ int cell_init(Sudoku* s, Cell* c, int value)
 // Libère les ressources allouées pour une case. NE LIBERE PAS LA CASE EN ELLE MEME.
 void cell_free(Cell* c)
 {
-	omp_destroy_lock(&c->lock);
+	omp_destroy_lock(&(c->lock));
 	free(c->values);
 	c->values = NULL;
 	c->values_size = 0;
@@ -438,6 +451,15 @@ __inline void sudoku_dirty_setter_block(Sudoku* s, int block, int index)
 	sudoku_set_dirty_INTERNAL(s, (block / s->dim) * s->dim + (index / s->dim), (block % s->dim) * s->dim + (index % s->dim));
 }
 
+
+__inline void sudoku_force_set_dirty(Sudoku* s, int row, int col)
+{
+	s->dirty = 1;
+	s->dirty_rows[row] = 1;
+	s->dirty_columns[col] = 1;
+	s->dirty_blocks[sudoku_get_cell_block(s, row, col)] = 1;
+}
+
 __inline void sudoku_clear_tmp_dirty_bits(Sudoku* s)
 {
 	s->dirty_tmp = 0;
@@ -478,9 +500,10 @@ __inline int sudoku_force_set_value(Sudoku* s, Cell* c, int v)
 // Affiche la grille de sudoku
 void sudoku_print(Sudoku* s)
 {
-	printf("+++++++++++++++++++++++++++++\n");
 	int i, j;
 	int v;
+
+	printf("+++++++++++++++++++++++++++++\n");
 	for (i = 0; i < s->value_range; i++)
 	{
 		for (j = 0; j < s->value_range; j++)
@@ -504,6 +527,9 @@ void sudoku_print(Sudoku* s)
 		printf("\n");
 	}
 	printf("+++++++++++++++++++++++++++++\n");
+	
+	/*
+	printf("DIRTY : %d\n", s->dirty);
 	printf("rows : ");
 	for (i = 0; i < s->value_range; i++)
 		printf("%d ", s->dirty_rows[i]);
@@ -515,6 +541,7 @@ void sudoku_print(Sudoku* s)
 		printf("%d ", s->dirty_blocks[i]);
 	printf("\n");
 	printf("+++++++++++++++++++++++++++++\n");
+	*/
 }
 
 // Fonction interne mettant à jour les cases selon un *getter* donné.
@@ -529,10 +556,16 @@ void sudoku_update_INTERNAL
 {
 	int i, j, m;
 
+	//printf("[%d/%d]\n", omp_get_thread_num(), omp_get_num_threads());
+
 	// Si une valeur est "écrite" dans une case, alors on peut retirer cette valeur des valeurs possibles dans les autres cases du groupe
 	for (i = 0; i < s->value_range; i++)
 	{
-		int v = cell_get_unique_value(getter(s, group, i));
+		Cell* c = getter(s, group, i);
+
+		omp_set_lock(&(c->lock));
+		int v = cell_get_unique_value(c);
+		omp_unset_lock(&(c->lock));
 
 		if (v != 0)
 		{
@@ -540,8 +573,12 @@ void sudoku_update_INTERNAL
 			{
 				if (i != j)
 				{
-					Cell* c = getter(s, group, j);
-					m = cell_unset_value(c, v);
+					Cell* c2 = getter(s, group, j);
+
+					omp_set_lock(&(c2->lock));
+					m = cell_unset_value(c2, v);
+					omp_unset_lock(&(c2->lock));
+
 					if (m == -1)
 					{
 						s->blocked = 1;
@@ -550,7 +587,7 @@ void sudoku_update_INTERNAL
 					if (m)
 					{
 						dirty_setter(s, group, j);
-						stack_push(s->stack, c, v);
+						stack_push(s->stack, c2, v);
 					}
 				}
 
@@ -568,7 +605,12 @@ void sudoku_update_INTERNAL
 		for (j = 0; j < s->value_range; j++)
 		{
 			Cell* c = getter(s, group, j);
-			if (cell_can_have_value(c, v))
+
+			omp_set_lock(&(c->lock));
+			int can_have_value = cell_can_have_value(c, v);
+			omp_unset_lock(&(c->lock));
+
+			if (can_have_value)
 			{
 				if (unique == NULL)
 				{
@@ -585,7 +627,10 @@ void sudoku_update_INTERNAL
 
 		if (unique != NULL)
 		{
+			omp_set_lock(&(unique->lock));
 			m = sudoku_force_set_value(s, unique, v);
+			omp_unset_lock(&(unique->lock));
+			
 			if (m == -1)
 			{
 				s->blocked = 1;
@@ -620,7 +665,7 @@ __inline void sudoku_update_block(Sudoku* s, int index)
 // retourne 1 si un choix est fait, 0 sinon (= fin du sudoku puisque 100% value unique)
 int sudoku_make_choice(Sudoku* s, int choice_number)
 {
-	printf("BLOCKED : MAKING CHOICE (%d) -> ", s->stack->choices);
+	//printf("[%d] BLOCKED : MAKING CHOICE (%d) -> ", omp_get_thread_num(), s->stack->choices);
 	int i, j, k;
 	for (i = 0; i < s->value_range; i++)
 	{
@@ -639,17 +684,19 @@ int sudoku_make_choice(Sudoku* s, int choice_number)
 						{
 							stack_push_breakpoint(s->stack, count_v);
 							sudoku_force_set_value(s, c, k + 1);
-							sudoku_set_dirty_INTERNAL(s, i, j);
-							printf("choosing %d for cell %d:%d (test %d)\n", k + 1, i, j, count_v);
+							sudoku_force_set_dirty(s, i, j);
+							//printf("choosing %d for cell %d:%d (test %d)\n", k + 1, i, j, count_v);
 							return 1;
 						}
 					}
 				}
+				//printf("no more choice, need to backtrack\n");
 				return 0;
 			}
 		}
 	}
-	printf("no more choices\n");
+	printf("You shouldn't be here\n");
+	abort();
 	return 0;
 }
 
@@ -699,12 +746,11 @@ int sudoku_backtrack(Sudoku* s)
 			return a.val;
 		cell_set_value(a.cell, a.val);
 	}
-	return 0;
+	return -1;
 }
 
 void sudoku_resolution(Sudoku* s)
 {
-	int max_it = 100000;
 	int end, it, i, check;
 	it = 0;
 	end = 1;
@@ -739,16 +785,18 @@ void sudoku_resolution(Sudoku* s)
 
 			sudoku_apply_dirty_bits(s);
 
-			printf("----- %d\n", it);
+			//printf("----- %d\n", it);
 			it++;
+			if (it % 100 == 0)
+			{
+				printf(".");
+				fflush(stdout);
+			}
 
 			if (s->blocked)
 				break;
 
 		} while (s->dirty);
-
-		if (it > max_it)
-			return;
 		
 		if (s->blocked)
 			check = 0;
@@ -761,15 +809,21 @@ void sudoku_resolution(Sudoku* s)
 		}
 		else if (check == 0) // une case ne peut plus être remplie
 		{
+			int r;
 			do {
 				int choice_nbr = sudoku_backtrack(s); // retour précédent
-				end = sudoku_make_choice(s, choice_nbr);
-				printf("Backtraking to choice %d\n", s->stack->choices - 1);
-			} while (end != 1); // end = 1 -> un nouveau choix peut être fait
+				if (choice_nbr == -1)
+				{
+					printf("This sudoku has no solution\n");
+					return;
+				}
+				r = sudoku_make_choice(s, choice_nbr);
+				//printf("Backtraking to choice %d\n", s->stack->choices - 1);
+			} while (r != 1); // r = 1 -> un nouveau choix peut être fait
 		}
 		else // il reste des cases vides
 		{
-			end = sudoku_make_choice(s, 0);
+			sudoku_make_choice(s, 0);
 		}
 	}
 }
